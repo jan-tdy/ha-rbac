@@ -716,6 +716,7 @@ class HaRbacPanel extends HTMLElement {
           ...readRules(role),
           appDenied: [...((role.apps || {}).deny || [])],
           dashboardLevels: { ...((role.apps || {}).dashboards || {}) },
+          dashboardEdit: [...((role.apps || {}).dashboard_edit || [])],
           schedule: readSchedule(role),
           location: {
             zones: [...((role.location || {}).zones || [])],
@@ -920,16 +921,24 @@ class HaRbacPanel extends HTMLElement {
         role is allowed elsewhere, or it can carry its own contents with it.
         Those are read from the dashboard whenever a request is judged, so
         editing a dashboard changes what its holders see without anyone
-        reopening the role. A denial elsewhere still wins.</p>
+        reopening the role. A denial elsewhere still wins. "Can edit" is a
+        different thing from the two before it: it says whether this role may
+        change the dashboard's own layout -- its views and cards -- not what
+        the role sees drawn on it. Home Assistant's own dashboard editor is
+        shown or hidden by a single administrator flag, so ticking this for
+        even one dashboard reports this role as an administrator to the
+        frontend; every other check still runs exactly as it did, so a role
+        with no other access still reaches nothing else.</p>
       <table id="dashboards">
         <thead><tr>
-          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th>
+          <th>Dashboard</th><th>Can open</th><th>Sees what is on it</th><th>Can edit</th>
         </tr></thead>
         <tbody>${this._visibleApps()
           .filter((app) => app.kind === "lovelace")
           .map((app) => {
             const denied = draft.appDenied.includes(app.url_path);
             const level = draft.dashboardLevels[app.url_path] || "empty";
+            const canEdit = draft.dashboardEdit.includes(app.url_path);
             const box = (which, on) =>
               `<ha-checkbox data-dash="${esc(app.url_path)}" data-level="${which}"
                  ${on ? "checked" : ""} ${locked ? "disabled" : ""}></ha-checkbox>`;
@@ -937,6 +946,7 @@ class HaRbacPanel extends HTMLElement {
               <td>${esc(app.label)}</td>
               <td>${box("open", !denied)}</td>
               <td>${box("content", !denied && level !== "empty")}</td>
+              <td>${box("edit", !denied && canEdit)}</td>
             </tr>`;
           })
           .join("")}</tbody>
@@ -1466,9 +1476,13 @@ class HaRbacPanel extends HTMLElement {
       }
       case "dashboards": {
         const levels = Object.values(draft.dashboardLevels || {});
-        return levels.length
+        const editable = (draft.dashboardEdit || []).length;
+        const base = levels.length
           ? `${levels.length} carrying contents`
           : "Open only, no contents";
+        return editable
+          ? `${base}, ${editable} editable`
+          : base;
       }
       case "entities": {
         const base = (BASE.find((o) => o.value === draft.base) || {}).label || "";
@@ -2471,6 +2485,10 @@ class HaRbacPanel extends HTMLElement {
    * dashboard showed. Dashboards are editable, so it was a way to hand out
    * control the role's entity list never gave; control now comes from that list
    * alone. A role still holding the old level reads as this one.
+   *
+   * "Can edit" is unrelated to either: it governs the dashboard's own layout,
+   * not what the role sees or controls on it, so it only implies "open" and
+   * is otherwise independent of the level.
    */
   _wireDashboards(locked) {
     if (locked) return;
@@ -2485,7 +2503,10 @@ class HaRbacPanel extends HTMLElement {
 
         if (which === "open" && !on) {
           at("content").checked = false;
+          at("edit").checked = false;
         } else if (which === "content" && on) {
+          at("open").checked = true;
+        } else if (which === "edit" && on) {
           at("open").checked = true;
         }
 
@@ -2495,6 +2516,8 @@ class HaRbacPanel extends HTMLElement {
         if (denied) this._draft.appDenied.push(path);
         if (level === "empty") delete this._draft.dashboardLevels[path];
         else this._draft.dashboardLevels[path] = level;
+        this._draft.dashboardEdit = this._draft.dashboardEdit.filter((p) => p !== path);
+        if (at("edit").checked) this._draft.dashboardEdit.push(path);
         this._refreshSeesNothing();
       });
     }
@@ -2578,6 +2601,7 @@ class HaRbacPanel extends HTMLElement {
       },
       apps: {
         dashboards: { ...this._draft.dashboardLevels },
+        dashboard_edit: [...this._draft.dashboardEdit],
         allow: [],
         // System panels are not offered, so they have no checkbox. Carry any
         // denial they already had rather than silently granting it back.
